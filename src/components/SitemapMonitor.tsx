@@ -20,6 +20,20 @@ interface RecrawlResult {
 }
 
 export function SitemapMonitor() {
+  // Helper for HTTP status badge
+  const httpStatusBadge = (code?: number) => {
+    if (!code) return null
+    let bg = 'bg-gray-100 text-gray-500'
+    if (code >= 500) bg = 'bg-red-100 text-red-700 font-medium'
+    else if (code >= 400) bg = 'bg-orange-100 text-orange-700 font-medium'
+    else if (code >= 300) bg = 'bg-yellow-100 text-yellow-700'
+    else if (code >= 200) bg = 'bg-green-100 text-green-700'
+    return (
+      <span className={`text-xs px-1.5 py-0.5 rounded ${bg} ml-auto shrink-0`}>
+        HTTP {code}
+      </span>
+    )
+  }
   const [sitemapUrl, setSitemapUrl] = useState('https://gdeotel.ru/cities-sitemap.xml')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -50,6 +64,8 @@ export function SitemapMonitor() {
 
   // Track whether current check was already saved
   const savedCheckRef = useRef(false)
+  // Track the actual sitemap URL that was checked (not the input field)
+  const checkedSitemapUrlRef = useRef('')
 
   const pollStatus = useCallback(async () => {
     try {
@@ -79,7 +95,7 @@ export function SitemapMonitor() {
       db.checkHistory.add({
         date: dateStr,
         timestamp: now.getTime(),
-        sitemapUrl,
+        sitemapUrl: checkedSitemapUrlRef.current || sitemapUrl,
         sitemapUrlCount,
         indexedCount: indexed.length,
         notIndexedCount: notIndexed.length,
@@ -132,6 +148,7 @@ export function SitemapMonitor() {
     setError(null)
     setRecrawlResults(null)
     savedCheckRef.current = false
+    checkedSitemapUrlRef.current = sitemapUrl
     try {
       const res = await fetch('/api/webmaster/indexing', {
         method: 'POST',
@@ -290,9 +307,15 @@ export function SitemapMonitor() {
             <div className="w-full bg-gray-200 rounded-full h-2">
               <div className="bg-blue-600 h-2 rounded-full transition-all" style={{ width: `${progressPct}%` }} />
             </div>
-            <div className="flex gap-4 text-sm">
+            <div className="flex gap-4 text-sm flex-wrap">
               <span className="text-green-600 font-medium">✅ В индексе: {indexed.length}</span>
               {isDone && <span className="text-red-600 font-medium">❌ Не в индексе: {notIndexed.length}</span>}
+              {isDone && indexed.filter(u => u.httpCode && u.httpCode >= 500).length > 0 && (
+                <span className="text-red-700 font-medium">🔴 HTTP 5xx: {indexed.filter(u => u.httpCode && u.httpCode >= 500).length}</span>
+              )}
+              {isDone && indexed.filter(u => u.httpCode && u.httpCode >= 400 && u.httpCode < 500).length > 0 && (
+                <span className="text-orange-600 font-medium">🟠 HTTP 4xx: {indexed.filter(u => u.httpCode && u.httpCode >= 400 && u.httpCode < 500).length}</span>
+              )}
               {isRunning && <span className="text-gray-500">⏳ Осталось найти: {sitemapUrlCount - indexed.length}</span>}
             </div>
           </div>
@@ -310,7 +333,7 @@ export function SitemapMonitor() {
                 <a href={u.url} target="_blank" rel="noopener noreferrer" className="text-gray-700 hover:text-blue-600 break-all">
                   {decodeURIComponent(u.sitemapUrl)}
                 </a>
-                {u.httpCode && <span className="text-xs text-gray-400 ml-auto shrink-0">HTTP {u.httpCode}</span>}
+                {httpStatusBadge(u.httpCode)}
               </div>
             ))}
           </div>
@@ -412,6 +435,8 @@ export function SitemapMonitor() {
                 {historyRecords.map(record => {
                   const isExpanded = expandedHistoryId === record.id
                   const recrawledSuccess = record.recrawled?.filter(r => r.success) || []
+                  const http5xx = record.indexed.filter(u => u.httpCode && u.httpCode >= 500).length
+                  const http4xx = record.indexed.filter(u => u.httpCode && u.httpCode >= 400 && (u.httpCode || 0) < 500).length
                   return (
                     <div key={record.id} className="border border-gray-200 rounded-lg overflow-hidden">
                       {/* Summary row */}
@@ -429,6 +454,12 @@ export function SitemapMonitor() {
                           <span className="text-xs px-2 py-1 rounded bg-blue-50 text-blue-700">URL: {record.sitemapUrlCount}</span>
                           <span className="text-xs px-2 py-1 rounded bg-green-50 text-green-700">✅ {record.indexedCount}</span>
                           <span className="text-xs px-2 py-1 rounded bg-red-50 text-red-700">❌ {record.notIndexedCount}</span>
+                          {http5xx > 0 && (
+                            <span className="text-xs px-2 py-1 rounded bg-red-100 text-red-800 font-medium">5xx: {http5xx}</span>
+                          )}
+                          {http4xx > 0 && (
+                            <span className="text-xs px-2 py-1 rounded bg-orange-100 text-orange-700 font-medium">4xx: {http4xx}</span>
+                          )}
                           {recrawledSuccess.length > 0 && (
                             <span className="text-xs px-2 py-1 rounded bg-orange-50 text-orange-700">🔄 {recrawledSuccess.length}</span>
                           )}
@@ -480,7 +511,7 @@ export function SitemapMonitor() {
                                   <a href={u.url} target="_blank" rel="noopener noreferrer" className="text-gray-700 hover:text-blue-600 break-all">
                                     {decodeURIComponent(u.sitemapUrl || u.url)}
                                   </a>
-                                  {u.httpCode && <span className="text-xs text-gray-400 ml-auto shrink-0">HTTP {u.httpCode}</span>}
+                                  {httpStatusBadge(u.httpCode)}
                                 </div>
                               ))}
                             </div>
