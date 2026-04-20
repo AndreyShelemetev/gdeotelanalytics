@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { db, CheckHistory } from '@/lib/db'
 
 interface IndexedUrl {
   url: string
@@ -40,6 +41,16 @@ export function SitemapMonitor() {
   // Filter state for not-indexed list
   const [filterText, setFilterText] = useState('')
 
+  // History state
+  const [historyDates, setHistoryDates] = useState<string[]>([])
+  const [selectedDate, setSelectedDate] = useState<string>('')
+  const [historyRecords, setHistoryRecords] = useState<CheckHistory[]>([])
+  const [expandedHistoryId, setExpandedHistoryId] = useState<number | null>(null)
+  const [historyTab, setHistoryTab] = useState<'indexed' | 'notIndexed' | 'recrawled'>('indexed')
+
+  // Track whether current check was already saved
+  const savedCheckRef = useRef(false)
+
   const pollStatus = useCallback(async () => {
     try {
       const res = await fetch('/api/webmaster/indexing?action=sitemap_check_status')
@@ -59,6 +70,52 @@ export function SitemapMonitor() {
     } catch {}
   }, [])
 
+  // Auto-save check results when status transitions to done
+  useEffect(() => {
+    if (checkStatus === 'done' && !savedCheckRef.current && (indexed.length > 0 || notIndexed.length > 0)) {
+      savedCheckRef.current = true
+      const now = new Date()
+      const dateStr = now.toISOString().slice(0, 10)
+      db.checkHistory.add({
+        date: dateStr,
+        timestamp: now.getTime(),
+        sitemapUrl,
+        sitemapUrlCount,
+        indexedCount: indexed.length,
+        notIndexedCount: notIndexed.length,
+        indexed: indexed.map(u => ({
+          url: u.url,
+          sitemapUrl: u.sitemapUrl,
+          status: u.status,
+          httpCode: u.httpCode,
+          accessDate: u.accessDate,
+        })),
+        notIndexed: [...notIndexed],
+        recrawled: [],
+        elapsed,
+      }).then(() => loadHistoryDates()).catch(err => console.error('Failed to save check history:', err))
+    }
+  }, [checkStatus, indexed, notIndexed, sitemapUrl, sitemapUrlCount, elapsed])
+
+  // Load available history dates on mount
+  const loadHistoryDates = useCallback(async () => {
+    try {
+      const all = await db.checkHistory.orderBy('timestamp').reverse().toArray()
+      const dates = [...new Set(all.map(r => r.date))]
+      setHistoryDates(dates)
+    } catch {}
+  }, [])
+
+  useEffect(() => { loadHistoryDates() }, [loadHistoryDates])
+
+  // Load records when a date is selected
+  useEffect(() => {
+    if (!selectedDate) { setHistoryRecords([]); return }
+    db.checkHistory.where('date').equals(selectedDate).reverse().sortBy('timestamp')
+      .then(records => setHistoryRecords(records))
+      .catch(() => setHistoryRecords([]))
+  }, [selectedDate])
+
   // Start polling when check is running
   useEffect(() => {
     if (checkStatus === 'running' && !pollRef.current) {
@@ -74,6 +131,7 @@ export function SitemapMonitor() {
     setLoading(true)
     setError(null)
     setRecrawlResults(null)
+    savedCheckRef.current = false
     try {
       const res = await fetch('/api/webmaster/indexing', {
         method: 'POST',
@@ -140,9 +198,25 @@ export function SitemapMonitor() {
       })
       const data = await res.json()
       if (!res.ok) { setError(data.error || 'Ошибка отправки'); return }
-      setRecrawlResults(data.results || [])
+      const results = data.results || []
+      setRecrawlResults(results)
       // Refresh quota
       loadQuota()
+      // Save recrawl results to the latest check history record
+      try {
+        const latest = await db.checkHistory.orderBy('timestamp').reverse().first()
+        if (latest?.id) {
+          const recrawled = results.map((r: RecrawlResult) => ({
+            url: r.url,
+            success: r.success,
+            task_id: r.task_id,
+            error: r.error,
+          }))
+          await db.checkHistory.update(latest.id, {
+            recrawled: [...(latest.recrawled || []), ...recrawled],
+          })
+        }
+      } catch {}
     } catch (err: any) {
       setError(err.message)
     } finally {
@@ -308,6 +382,156 @@ export function SitemapMonitor() {
           </div>
         </div>
       )}
+
+      {/* ─── Check History ─── */}
+      <div className="bg-white rounded-lg shadow p-6">
+        <h3 className="text-lg font-semibold text-gray-900 mb-4">📅 История проверок</h3>
+
+        {historyDates.length === 0 ? (
+          <p className="text-sm text-gray-400">Нет сохранённых проверок. Результаты будут сохраняться автоматически после каждой проверки.</p>
+        ) : (
+          <>
+            <div className="flex flex-wrap gap-2 mb-4">
+              {historyDates.map(date => (
+                <button
+                  key={date}
+                  onClick={() => { setSelectedDate(selectedDate === date ? '' : date); setExpandedHistoryId(null) }}
+                  className={`px-3 py-1.5 text-sm rounded-md border transition-colors ${
+                    selectedDate === date
+                      ? 'bg-blue-600 text-white border-blue-600'
+                      : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                  }`}
+                >
+                  {new Date(date + 'T00:00:00').toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })}
+                </button>
+              ))}
+            </div>
+
+            {selectedDate && historyRecords.length > 0 && (
+              <div className="space-y-3">
+                {historyRecords.map(record => {
+                  const isExpanded = expandedHistoryId === record.id
+                  const recrawledSuccess = record.recrawled?.filter(r => r.success) || []
+                  return (
+                    <div key={record.id} className="border border-gray-200 rounded-lg overflow-hidden">
+                      {/* Summary row */}
+                      <button
+                        onClick={() => setExpandedHistoryId(isExpanded ? null : (record.id ?? null))}
+                        className="w-full flex items-center justify-between p-4 hover:bg-gray-50 transition-colors text-left"
+                      >
+                        <div className="flex items-center gap-4 flex-wrap">
+                          <span className="text-sm text-gray-500">
+                            {new Date(record.timestamp).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                          <span className="text-sm font-medium text-gray-700 break-all">{record.sitemapUrl}</span>
+                        </div>
+                        <div className="flex items-center gap-3 shrink-0 ml-4">
+                          <span className="text-xs px-2 py-1 rounded bg-blue-50 text-blue-700">URL: {record.sitemapUrlCount}</span>
+                          <span className="text-xs px-2 py-1 rounded bg-green-50 text-green-700">✅ {record.indexedCount}</span>
+                          <span className="text-xs px-2 py-1 rounded bg-red-50 text-red-700">❌ {record.notIndexedCount}</span>
+                          {recrawledSuccess.length > 0 && (
+                            <span className="text-xs px-2 py-1 rounded bg-orange-50 text-orange-700">🔄 {recrawledSuccess.length}</span>
+                          )}
+                          <span className="text-gray-400">{isExpanded ? '▲' : '▼'}</span>
+                        </div>
+                      </button>
+
+                      {/* Expanded detail */}
+                      {isExpanded && (
+                        <div className="border-t border-gray-200 p-4">
+                          <div className="text-xs text-gray-400 mb-3">Время проверки: {record.elapsed}с</div>
+
+                          {/* Sub-tabs */}
+                          <div className="flex gap-2 mb-3 border-b border-gray-100 pb-2">
+                            <button
+                              onClick={() => setHistoryTab('indexed')}
+                              className={`px-3 py-1 text-xs rounded-md transition-colors ${
+                                historyTab === 'indexed' ? 'bg-green-100 text-green-800 font-medium' : 'text-gray-500 hover:bg-gray-100'
+                              }`}
+                            >
+                              ✅ В индексе ({record.indexedCount})
+                            </button>
+                            <button
+                              onClick={() => setHistoryTab('notIndexed')}
+                              className={`px-3 py-1 text-xs rounded-md transition-colors ${
+                                historyTab === 'notIndexed' ? 'bg-red-100 text-red-800 font-medium' : 'text-gray-500 hover:bg-gray-100'
+                              }`}
+                            >
+                              ❌ Не в индексе ({record.notIndexedCount})
+                            </button>
+                            <button
+                              onClick={() => setHistoryTab('recrawled')}
+                              className={`px-3 py-1 text-xs rounded-md transition-colors ${
+                                historyTab === 'recrawled' ? 'bg-orange-100 text-orange-800 font-medium' : 'text-gray-500 hover:bg-gray-100'
+                              }`}
+                            >
+                              🔄 На переобход ({record.recrawled?.length || 0})
+                            </button>
+                          </div>
+
+                          {/* Indexed pages */}
+                          {historyTab === 'indexed' && (
+                            <div className="space-y-1 max-h-80 overflow-y-auto">
+                              {record.indexed.length === 0 ? (
+                                <p className="text-sm text-gray-400">Нет проиндексированных страниц</p>
+                              ) : record.indexed.map((u, i) => (
+                                <div key={i} className="flex items-center gap-2 py-1 px-2 rounded text-sm hover:bg-green-50">
+                                  <span className="text-green-500">●</span>
+                                  <a href={u.url} target="_blank" rel="noopener noreferrer" className="text-gray-700 hover:text-blue-600 break-all">
+                                    {decodeURIComponent(u.sitemapUrl || u.url)}
+                                  </a>
+                                  {u.httpCode && <span className="text-xs text-gray-400 ml-auto shrink-0">HTTP {u.httpCode}</span>}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          {/* Not indexed pages */}
+                          {historyTab === 'notIndexed' && (
+                            <div className="space-y-1 max-h-80 overflow-y-auto">
+                              {record.notIndexed.length === 0 ? (
+                                <p className="text-sm text-gray-400">Все страницы проиндексированы</p>
+                              ) : record.notIndexed.map((url, i) => (
+                                <div key={i} className="flex items-center gap-2 py-1 px-2 rounded text-sm hover:bg-red-50">
+                                  <span className="text-red-400">●</span>
+                                  <a href={url} target="_blank" rel="noopener noreferrer" className="text-gray-700 hover:text-blue-600 break-all">
+                                    {decodeURIComponent(url)}
+                                  </a>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          {/* Recrawled pages */}
+                          {historyTab === 'recrawled' && (
+                            <div className="space-y-1 max-h-80 overflow-y-auto">
+                              {(!record.recrawled || record.recrawled.length === 0) ? (
+                                <p className="text-sm text-gray-400">Не отправлялись на переобход</p>
+                              ) : record.recrawled.map((r, i) => (
+                                <div key={i} className="flex items-center gap-2 py-1 px-2 rounded text-sm hover:bg-orange-50">
+                                  <span className={r.success ? 'text-green-500' : 'text-red-400'}>{r.success ? '✓' : '✕'}</span>
+                                  <a href={r.url} target="_blank" rel="noopener noreferrer" className="text-gray-700 hover:text-blue-600 break-all">
+                                    {decodeURIComponent(r.url)}
+                                  </a>
+                                  {r.error && <span className="text-xs text-red-500 ml-auto shrink-0">{r.error}</span>}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+
+            {selectedDate && historyRecords.length === 0 && (
+              <p className="text-sm text-gray-400">Нет записей за выбранную дату.</p>
+            )}
+          </>
+        )}
+      </div>
     </div>
   )
 }
