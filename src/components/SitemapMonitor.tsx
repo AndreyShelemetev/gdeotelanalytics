@@ -20,6 +20,37 @@ interface RecrawlResult {
 }
 
 export function SitemapMonitor() {
+  // Yandex auth state
+  const [yandexAuth, setYandexAuth] = useState<boolean | null>(null)
+  const [authLoading, setAuthLoading] = useState(true)
+
+  const checkYandexAuth = async () => {
+    try {
+      const res = await fetch('/api/webmaster/oauth?action=status')
+      if (res.ok) {
+        const data = await res.json()
+        setYandexAuth(data.authenticated)
+      } else {
+        setYandexAuth(false)
+      }
+    } catch {
+      setYandexAuth(false)
+    } finally {
+      setAuthLoading(false)
+    }
+  }
+
+  const handleYandexAuthorize = async () => {
+    try {
+      const res = await fetch('/api/webmaster/oauth?action=auth_url')
+      if (!res.ok) return
+      const data = await res.json()
+      if (data?.auth_url) window.location.href = data.auth_url
+    } catch {}
+  }
+
+  useEffect(() => { checkYandexAuth() }, [])
+
   // Helper for HTTP status badge
   const httpStatusBadge = (code?: number) => {
     if (!code) return null
@@ -62,8 +93,11 @@ export function SitemapMonitor() {
   const [expandedHistoryId, setExpandedHistoryId] = useState<number | null>(null)
   const [historyTab, setHistoryTab] = useState<'indexed' | 'notIndexed' | 'recrawled'>('indexed')
 
-  // Track whether current check was already saved
-  const savedCheckRef = useRef(false)
+  // Track whether current check was already saved.
+  // Initialize to true so a stale 'done' state loaded from the server on mount
+  // does not trigger an auto-save (which would duplicate the previous record
+  // under the default sitemap URL). startCheck() resets this to false.
+  const savedCheckRef = useRef(true)
   // Track the actual sitemap URL that was checked (not the input field)
   const checkedSitemapUrlRef = useRef('')
 
@@ -156,7 +190,15 @@ export function SitemapMonitor() {
         body: JSON.stringify({ action: 'start_sitemap_check', sitemapUrl }),
       })
       const data = await res.json()
-      if (!res.ok) { setError(data.error || 'Ошибка'); return }
+      if (!res.ok) {
+        if (res.status === 401 && data.needAuth) {
+          setYandexAuth(false)
+          setError('Требуется авторизация в Яндексе')
+        } else {
+          setError(data.error || 'Ошибка')
+        }
+        return
+      }
       setSitemapUrlCount(data.urlCount)
       setCheckStatus('running')
       setProgress({ checked: 0, total: 0, found: 0 })
@@ -287,6 +329,18 @@ export function SitemapMonitor() {
             </button>
           )}
         </div>
+
+        {yandexAuth === false && (
+          <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-md mb-4 flex items-center justify-between">
+            <p className="text-sm text-yellow-800">Требуется авторизация в Яндекс.Вебмастере</p>
+            <button
+              onClick={handleYandexAuthorize}
+              className="px-4 py-1.5 bg-yellow-500 text-white text-sm font-medium rounded-md hover:bg-yellow-600 transition-colors whitespace-nowrap"
+            >
+              Авторизоваться в Яндексе
+            </button>
+          </div>
+        )}
 
         {error && (
           <div className="p-3 bg-red-50 border border-red-200 rounded-md mb-4">

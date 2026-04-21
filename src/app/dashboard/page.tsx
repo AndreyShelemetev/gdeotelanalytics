@@ -34,7 +34,7 @@ export default function DashboardPage() {
     if (status === 'unauthenticated') router.push('/login')
   }, [status, router])
 
-  const fetchStats = useCallback(async () => {
+  const fetchStats = useCallback(async (force = false) => {
     setLoading(true)
     const params = new URLSearchParams({ project: filters.project })
     if (filters.countryId) params.set('country_id', filters.countryId)
@@ -43,10 +43,15 @@ export default function DashboardPage() {
     const key = `${filters.project}-${filters.countryId || ''}-${filters.regionId || ''}-${filters.cityId || ''}`
 
     // Check cache for summary
-    const cachedSummary = await db.statsSummary.where('id').equals(key).first()
-    if (cachedSummary && Date.now() - cachedSummary.timestamp < 3600000) { // 1 hour
-      setStats(cachedSummary.data)
-    } else {
+    if (!force) {
+      const cachedSummary = await db.statsSummary.where('id').equals(key).first()
+      if (cachedSummary && Date.now() - cachedSummary.timestamp < 3600000) {
+        setStats(cachedSummary.data)
+      } else {
+        force = true
+      }
+    }
+    if (force) {
       try {
         const statsRes = await fetch(`/api/stats/summary?${params}`)
         if (statsRes.ok) {
@@ -60,10 +65,15 @@ export default function DashboardPage() {
     }
 
     // Check cache for frequency
-    const cachedFreq = await db.statsFrequency.where('id').equals(key).first()
-    if (cachedFreq && Date.now() - cachedFreq.timestamp < 3600000) {
-      setFrequency(cachedFreq.data)
-    } else {
+    if (!force) {
+      const cachedFreq = await db.statsFrequency.where('id').equals(key).first()
+      if (cachedFreq && Date.now() - cachedFreq.timestamp < 3600000) {
+        setFrequency(cachedFreq.data)
+      } else {
+        force = true
+      }
+    }
+    if (force) {
       try {
         const freqRes = await fetch(`/api/stats/frequency?${params}&limit=15`)
         if (freqRes.ok) {
@@ -121,6 +131,16 @@ export default function DashboardPage() {
           >
             {loading ? 'Загрузка...' : loaded ? 'Данные загружены' : 'Загрузить данные'}
           </button>
+          {loaded && (
+            <button
+              onClick={() => fetchStats(true)}
+              disabled={loading}
+              className="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded text-sm disabled:opacity-50 transition-colors"
+              title="Обновить данные"
+            >
+              ↻ Обновить
+            </button>
+          )}
           <span className="text-sm text-gray-500">{session?.user?.name}</span>
           <button onClick={() => signOut()} className="text-xs text-gray-400 hover:text-gray-600">Logout</button>
         </div>
@@ -136,6 +156,7 @@ export default function DashboardPage() {
           onChange={(f) => setFilters((prev) => ({ ...prev, ...f }))}
           disabled={loading}
           loadData={loaded}
+          onRefresh={() => fetchStats(true)}
         />
 
         {loading ? (
