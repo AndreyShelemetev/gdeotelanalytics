@@ -113,6 +113,7 @@ export default function DashboardPage() {
             <Link href="/matching" className="px-3 py-1.5 rounded hover:bg-gray-100 text-gray-600">Matching</Link>
             <Link href="/single-source" className="px-3 py-1.5 rounded hover:bg-gray-100 text-gray-600">Single Source</Link>
             <Link href="/webmaster" className="px-3 py-1.5 rounded hover:bg-gray-100 text-gray-600">Webmaster</Link>
+            <Link href="/page-checker" className="px-3 py-1.5 rounded hover:bg-gray-100 text-gray-600">Page Checker</Link>
           </nav>
           <ProjectSelector
             value={filters.project}
