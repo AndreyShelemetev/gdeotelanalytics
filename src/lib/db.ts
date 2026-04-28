@@ -65,6 +65,31 @@ export interface CheckHistory {
   elapsed: number
 }
 
+export interface UrlCheckResult {
+  url: string
+  isIndexed: boolean | null
+  notMonitored?: boolean
+  indexingStatus?: string
+  httpCode?: number
+  title?: string | null
+  targetUrl?: string | null
+  excludedReason?: string | null
+  lastAccess?: string | null
+}
+
+export interface UrlCheckHistory {
+  id?: number
+  date: string
+  timestamp: number
+  mode: 'single' | 'batch'
+  inputUrls: string[]
+  results: UrlCheckResult[]
+  recrawled: CheckHistoryRecrawlResult[]
+  indexedCount: number
+  notIndexedCount: number
+  notMonitoredCount: number
+}
+
 export class AnalyticsDB extends Dexie {
   countries!: Table<Country>
   regions!: Table<Region>
@@ -72,6 +97,7 @@ export class AnalyticsDB extends Dexie {
   statsSummary!: Table<StatsSummary>
   statsFrequency!: Table<StatsFrequency>
   checkHistory!: Table<CheckHistory>
+  urlCheckHistory!: Table<UrlCheckHistory>
 
   constructor() {
     super('AnalyticsDB')
@@ -89,6 +115,15 @@ export class AnalyticsDB extends Dexie {
       statsSummary: 'id, timestamp',
       statsFrequency: 'id, timestamp',
       checkHistory: '++id, date, timestamp',
+    })
+    this.version(3).stores({
+      countries: 'id, project',
+      regions: 'id, country_id, project',
+      cities: 'id, region_id, country_id, project',
+      statsSummary: 'id, timestamp',
+      statsFrequency: 'id, timestamp',
+      checkHistory: '++id, date, timestamp',
+      urlCheckHistory: '++id, date, timestamp',
     })
   }
 }

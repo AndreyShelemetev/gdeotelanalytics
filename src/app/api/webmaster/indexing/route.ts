@@ -26,6 +26,41 @@ let sitemapCheck: SitemapCheckState = {
   startedAt: 0,
 }
 
+// ─── Module-level state for background deep URL check ───
+interface DeepUrlCheckResult {
+  url: string
+  known: boolean
+  inSearch: boolean
+  status?: string
+  httpCode?: number
+  accessDate?: string
+}
+
+interface DeepUrlCheckState {
+  status: 'idle' | 'running' | 'done' | 'error' | 'cancelled'
+  inputUrls: string[]
+  results: DeepUrlCheckResult[]
+  progress: {
+    indexedChecked: number
+    indexedTotal: number
+    searchChecked: number
+    searchTotal: number
+    foundKnown: number
+    foundInSearch: number
+  }
+  error: string
+  startedAt: number
+}
+
+let deepUrlCheck: DeepUrlCheckState = {
+  status: 'idle',
+  inputUrls: [],
+  results: [],
+  progress: { indexedChecked: 0, indexedTotal: 0, searchChecked: 0, searchTotal: 0, foundKnown: 0, foundInSearch: 0 },
+  error: '',
+  startedAt: 0,
+}
+
 // ─── Helpers ───
 
 function getToken(): string | null {
@@ -194,6 +229,137 @@ async function runSitemapCheck(token: string, userId: string, hostId: string, ur
   }
 }
 
+// ─── Background deep URL check runner ───
+// Iterates through indexing/samples (known to robot) and search-urls/in-search/samples (in search)
+// to mark each input URL with `known` and `inSearch` flags.
+async function runDeepUrlCheck(token: string, userId: string, hostId: string, urls: string[]) {
+  const urlMap = new Map<string, string>() // normalized → original
+  for (const u of urls) urlMap.set(normalizeUrl(u), u)
+
+  const knownData = new Map<string, { status?: string; httpCode?: number; accessDate?: string }>()
+  const inSearchSet = new Set<string>()
+
+  const limit = 100
+
+  // Phase 1: scan indexing/samples (all URLs known to robot)
+  const scanIndexing = async () => {
+    let offset = 0
+    const first = await yandexFetch(
+      `/user/${userId}/hosts/${encodeURIComponent(hostId)}/indexing/samples?limit=${limit}&offset=0`,
+      token, true
+    )
+    const total = first.count || 0
+    deepUrlCheck.progress.indexedTotal = total
+
+    const remaining = new Set(urlMap.keys())
+
+    const processSamples = (samples: any[]) => {
+      for (const sample of samples) {
+        const norm = normalizeUrl(sample.url || '')
+        if (remaining.has(norm)) {
+          knownData.set(norm, {
+            status: sample.status,
+            httpCode: sample.http_code,
+            accessDate: sample.access_date,
+          })
+          remaining.delete(norm)
+        }
+      }
+    }
+
+    processSamples(first.samples || [])
+    offset = limit
+    deepUrlCheck.progress.indexedChecked = Math.min(offset, total)
+    deepUrlCheck.progress.foundKnown = knownData.size
+
+    while (offset < total && remaining.size > 0 && deepUrlCheck.status === 'running') {
+      const data = await yandexFetch(
+        `/user/${userId}/hosts/${encodeURIComponent(hostId)}/indexing/samples?limit=${limit}&offset=${offset}`,
+        token, true
+      )
+      const samples = data.samples || []
+      if (samples.length === 0) break
+      processSamples(samples)
+      offset += samples.length
+      deepUrlCheck.progress.indexedChecked = Math.min(offset, total)
+      deepUrlCheck.progress.foundKnown = knownData.size
+      await new Promise(r => setTimeout(r, 50))
+    }
+  }
+
+  // Phase 2: scan search-urls/in-search/samples (URLs currently in search)
+  const scanSearch = async () => {
+    let offset = 0
+    const first = await yandexFetch(
+      `/user/${userId}/hosts/${encodeURIComponent(hostId)}/search-urls/in-search/samples?limit=${limit}&offset=0`,
+      token, true
+    )
+    const total = first.count || 0
+    deepUrlCheck.progress.searchTotal = total
+
+    const remaining = new Set(urlMap.keys())
+
+    const processSamples = (samples: any[]) => {
+      for (const sample of samples) {
+        const norm = normalizeUrl(sample.url || '')
+        if (remaining.has(norm)) {
+          inSearchSet.add(norm)
+          remaining.delete(norm)
+        }
+      }
+    }
+
+    processSamples(first.samples || [])
+    offset = limit
+    deepUrlCheck.progress.searchChecked = Math.min(offset, total)
+    deepUrlCheck.progress.foundInSearch = inSearchSet.size
+
+    while (offset < total && remaining.size > 0 && deepUrlCheck.status === 'running') {
+      const data = await yandexFetch(
+        `/user/${userId}/hosts/${encodeURIComponent(hostId)}/search-urls/in-search/samples?limit=${limit}&offset=${offset}`,
+        token, true
+      )
+      const samples = data.samples || []
+      if (samples.length === 0) break
+      processSamples(samples)
+      offset += samples.length
+      deepUrlCheck.progress.searchChecked = Math.min(offset, total)
+      deepUrlCheck.progress.foundInSearch = inSearchSet.size
+      await new Promise(r => setTimeout(r, 50))
+    }
+  }
+
+  try {
+    // Run phases in parallel for speed
+    await Promise.all([scanIndexing(), scanSearch()])
+
+    if ((deepUrlCheck.status as string) === 'cancelled') {
+      console.log('[DeepUrlCheck] Cancelled')
+      return
+    }
+
+    // Build result list preserving input order
+    deepUrlCheck.results = urls.map(u => {
+      const norm = normalizeUrl(u)
+      const known = knownData.get(norm)
+      return {
+        url: u,
+        known: !!known,
+        inSearch: inSearchSet.has(norm),
+        status: known?.status,
+        httpCode: known?.httpCode,
+        accessDate: known?.accessDate,
+      }
+    })
+    deepUrlCheck.status = 'done'
+    console.log(`[DeepUrlCheck] Done. Known: ${knownData.size}, InSearch: ${inSearchSet.size}, Total: ${urls.length}`)
+  } catch (err: any) {
+    console.error('[DeepUrlCheck] Error:', err.message)
+    deepUrlCheck.status = 'error'
+    deepUrlCheck.error = err.message
+  }
+}
+
 export async function GET(request: Request) {
   const session = await getServerSession(authOptions)
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -228,6 +394,18 @@ export async function GET(request: Request) {
       notIndexed: sitemapCheck.notIndexed,
       error: sitemapCheck.error,
       elapsed: sitemapCheck.startedAt ? Math.round((Date.now() - sitemapCheck.startedAt) / 1000) : 0,
+    })
+  }
+
+  // Poll deep URL check progress
+  if (action === 'deep_url_check_status') {
+    return NextResponse.json({
+      status: deepUrlCheck.status,
+      progress: deepUrlCheck.progress,
+      inputUrlCount: deepUrlCheck.inputUrls.length,
+      results: deepUrlCheck.results,
+      error: deepUrlCheck.error,
+      elapsed: deepUrlCheck.startedAt ? Math.round((Date.now() - deepUrlCheck.startedAt) / 1000) : 0,
     })
   }
 
@@ -502,6 +680,67 @@ export async function POST(request: Request) {
       return NextResponse.json({ status: 'idle' })
     }
 
+    // ─── Start deep URL check (against /indexing/samples + /search-urls/in-search/samples) ───
+    if (action === 'start_deep_url_check') {
+      if (deepUrlCheck.status === 'running') {
+        return NextResponse.json({ error: 'Полная проверка уже запущена. Дождитесь завершения или отмените её.' }, { status: 409 })
+      }
+
+      const urls = (body.urls as string[]) || []
+      if (urls.length === 0) return NextResponse.json({ error: 'urls required' }, { status: 400 })
+
+      const site = body.site || extractSite(urls[0])
+      if (!site) return NextResponse.json({ error: 'Не удалось определить сайт из URL' }, { status: 400 })
+
+      const hostsData = await yandexFetch(`/user/${userId}/hosts/`, token)
+      const host = findHost(hostsData.hosts || [], site)
+      if (!host) {
+        return NextResponse.json({
+          error: 'Сайт не найден в Яндекс Вебмастер',
+          available_hosts: (hostsData.hosts || []).map((h: any) => h.ascii_host_url),
+        }, { status: 404 })
+      }
+
+      deepUrlCheck = {
+        status: 'running',
+        inputUrls: urls,
+        results: [],
+        progress: { indexedChecked: 0, indexedTotal: 0, searchChecked: 0, searchTotal: 0, foundKnown: 0, foundInSearch: 0 },
+        error: '',
+        startedAt: Date.now(),
+      }
+
+      runDeepUrlCheck(token, userId, host.host_id, urls).catch(err => {
+        console.error('[DeepUrlCheck] Unhandled error:', err)
+        deepUrlCheck.status = 'error'
+        deepUrlCheck.error = err.message
+      })
+
+      return NextResponse.json({ status: 'started', urlCount: urls.length, site: host.ascii_host_url })
+    }
+
+    // ─── Cancel running deep URL check ───
+    if (action === 'cancel_deep_url_check') {
+      if (deepUrlCheck.status === 'running') {
+        deepUrlCheck.status = 'cancelled'
+        return NextResponse.json({ status: 'cancelled' })
+      }
+      return NextResponse.json({ status: deepUrlCheck.status })
+    }
+
+    // ─── Reset deep URL check state ───
+    if (action === 'reset_deep_url_check') {
+      deepUrlCheck = {
+        status: 'idle',
+        inputUrls: [],
+        results: [],
+        progress: { indexedChecked: 0, indexedTotal: 0, searchChecked: 0, searchTotal: 0, foundKnown: 0, foundInSearch: 0 },
+        error: '',
+        startedAt: 0,
+      }
+      return NextResponse.json({ status: 'idle' })
+    }
+
     // ─── Submit URL for recrawl ───
     if (action === 'recrawl') {
       const url = body.url
@@ -528,6 +767,71 @@ export async function POST(request: Request) {
           details: result.data,
         }, { status: result.status })
       }
+    }
+
+    // ─── Batch check URLs against important-urls monitoring ───
+    if (action === 'batch_check_urls') {
+      const urls = (body.urls as string[]) || []
+      if (urls.length === 0) return NextResponse.json({ error: 'URLs array required' }, { status: 400 })
+      if (urls.length > 50) return NextResponse.json({ error: 'Максимум 50 URL за один запрос' }, { status: 400 })
+
+      const site = body.site || extractSite(urls[0])
+      if (!site) return NextResponse.json({ error: 'Не удалось определить сайт из URL' }, { status: 400 })
+
+      const hostsData = await yandexFetch(`/user/${userId}/hosts/`, token)
+      const host = findHost(hostsData.hosts || [], site)
+      if (!host) {
+        return NextResponse.json({
+          error: 'Сайт не найден в Яндекс Вебмастер',
+          available_hosts: (hostsData.hosts || []).map((h: any) => h.ascii_host_url),
+        }, { status: 404 })
+      }
+
+      const hostId = encodeURIComponent(host.host_id)
+      const importantData = await yandexFetch(`/user/${userId}/hosts/${hostId}/important-urls`, token)
+      const importantUrls = importantData.urls || []
+
+      const importantMap = new Map<string, any>()
+      for (const u of importantUrls) {
+        const url = decodeURIComponent(u.url || '').replace(/\/$/, '')
+        if (url) importantMap.set(url, u)
+        if (u.search_status?.target_url) {
+          const t = decodeURIComponent(u.search_status.target_url).replace(/\/$/, '')
+          if (t) importantMap.set(t, u)
+        }
+      }
+
+      const results = urls.map(pageUrl => {
+        let norm = pageUrl
+        try { norm = decodeURIComponent(pageUrl) } catch {}
+        norm = norm.replace(/\/$/, '')
+        const found = importantMap.get(norm)
+        if (!found) {
+          return { url: pageUrl, isIndexed: null as boolean | null, notMonitored: true }
+        }
+        return {
+          url: pageUrl,
+          isIndexed: found.search_status?.searchable ?? false,
+          notMonitored: false,
+          indexingStatus: found.indexing_status?.status,
+          httpCode: found.indexing_status?.http_code,
+          title: found.search_status?.title || null,
+          targetUrl: found.search_status?.target_url || null,
+          excludedReason: found.search_status?.excluded_url_status &&
+            found.search_status.excluded_url_status !== 'NOTHING_FOUND'
+              ? found.search_status.excluded_url_status : null,
+          lastAccess: found.search_status?.last_access || found.indexing_status?.access_date || null,
+        }
+      })
+
+      return NextResponse.json({
+        results,
+        site: host.ascii_host_url,
+        indexedCount: results.filter(r => r.isIndexed === true).length,
+        notIndexedCount: results.filter(r => r.isIndexed === false).length,
+        notMonitoredCount: results.filter(r => r.notMonitored).length,
+        monitoredTotal: importantUrls.length,
+      })
     }
 
     // ─── Batch recrawl: submit multiple URLs ───
@@ -572,7 +876,7 @@ export async function POST(request: Request) {
       })
     }
 
-    return NextResponse.json({ error: 'Unknown POST action. Use: start_sitemap_check, cancel_check, reset_check, recrawl, batch_recrawl' }, { status: 400 })
+    return NextResponse.json({ error: 'Unknown POST action. Use: start_sitemap_check, cancel_check, reset_check, recrawl, batch_recrawl, batch_check_urls, start_deep_url_check, cancel_deep_url_check, reset_deep_url_check' }, { status: 400 })
   } catch (error: any) {
     console.error('[Yandex] POST error:', error)
     return NextResponse.json({ error: 'Ошибка Yandex Webmaster API', details: error.message }, { status: 500 })
