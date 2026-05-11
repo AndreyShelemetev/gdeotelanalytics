@@ -1,6 +1,4 @@
 import { NextResponse } from 'next/server'
-import { getServerSession } from 'next-auth'
-import { authOptions } from '@/lib/auth'
 import { cookies } from 'next/headers'
 
 // Yandex OAuth configuration
@@ -9,9 +7,6 @@ const YANDEX_CLIENT_SECRET = process.env.YANDEX_CLIENT_SECRET || ''
 const YANDEX_REDIRECT_URI = process.env.YANDEX_REDIRECT_URI || 'http://localhost:3000/api/webmaster/oauth/callback'
 
 export async function GET(request: Request) {
-  const session = await getServerSession(authOptions)
-  if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-
   const { searchParams } = new URL(request.url)
   const action = searchParams.get('action')
 
@@ -56,9 +51,6 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  const session = await getServerSession(authOptions)
-  if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-
   const body = await request.json()
   const { code } = body
 

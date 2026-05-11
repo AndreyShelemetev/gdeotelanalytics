@@ -9,6 +9,7 @@ import { FilterPanel } from '@/components/FilterPanel'
 import { KPICards } from '@/components/KPICards'
 import { Charts } from '@/components/Charts'
 import { BreakdownChart } from '@/components/BreakdownChart'
+import { HotelsExport } from '@/components/HotelsExport'
 import { LoadingSpinner } from '@/components/LoadingSpinner'
 import { db } from '@/lib/db'
 import type { ProjectId } from '@/lib/constants'
@@ -210,6 +211,10 @@ export default function DashboardPage() {
               totalHotels={stats.summary?.total_hotels || 0}
               totalApartments={stats.summary?.total_apartments || 0}
             />
+
+            {filters.project === 'gdeotel' && (
+              <HotelsExport cityId={filters.cityId} />
+            )}
           </>
         ) : null}
       </div>

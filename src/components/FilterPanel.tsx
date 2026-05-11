@@ -69,71 +69,91 @@ export function FilterPanel({ project, countryId, regionId, cityId, onChange, di
 
   // Load countries when project changes
   useEffect(() => {
-    if (!loadData) return;
+    if (!loadData) return
+    let cancelled = false
     const loadCountries = async () => {
-      // Try to load from cache first
       const cached = await db.countries.where('project').equals(project).toArray()
+      if (cancelled) return
       if (cached.length > 0) {
         setCountries(cached)
         return
       }
       try {
         const res = await fetch(`/api/countries?project=${project}`)
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
         const data = await res.json()
+        if (cancelled) return
+        if (!Array.isArray(data)) throw new Error('Bad response')
         setCountries(data)
-        // Cache the data
-        await db.countries.bulkPut(data.map((c: any) => ({ ...c, project })))
+        if (data.length > 0) {
+          await db.countries.bulkPut(data.map((c: any) => ({ ...c, project })))
+        }
       } catch {
-        setCountries([])
+        if (!cancelled) setCountries([])
       }
     }
     loadCountries()
+    return () => { cancelled = true }
   }, [project, loadData])
 
   // Load regions when country changes
   useEffect(() => {
-    if (!loadData || !countryId) { setRegions([]); return }
+    setRegions([]) // сразу очищаем при смене страны
+    if (!loadData || !countryId) return
+    let cancelled = false
     const loadRegions = async () => {
-      // Try cache
       const cached = await db.regions.where({ country_id: countryId, project }).toArray()
+      if (cancelled) return
       if (cached.length > 0) {
         setRegions(cached)
         return
       }
-      // Fetch
       try {
         const res = await fetch(`/api/regions?project=${project}&country_id=${countryId}`)
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
         const data = await res.json()
+        if (cancelled) return
+        if (!Array.isArray(data)) throw new Error('Bad response')
         setRegions(data)
-        await db.regions.bulkPut(data.map((r: any) => ({ ...r, country_id: countryId, project })))
+        if (data.length > 0) {
+          await db.regions.bulkPut(data.map((r: any) => ({ ...r, country_id: countryId, project })))
+        }
       } catch {
-        setRegions([])
+        if (!cancelled) setRegions([])
       }
     }
     loadRegions()
+    return () => { cancelled = true }
   }, [project, countryId, loadData])
 
   // Load cities when region changes
   useEffect(() => {
-    if (!loadData || !regionId) { setCities([]); return }
+    setCities([]) // сразу очищаем при смене региона
+    if (!loadData || !regionId) return
+    let cancelled = false
     const loadCities = async () => {
-      // Try cache
       const cached = await db.cities.where({ region_id: regionId, country_id: countryId, project }).toArray()
+      if (cancelled) return
       if (cached.length > 0) {
         setCities(cached)
         return
       }
-      // Fetch
       try {
         const res = await fetch(`/api/cities?project=${project}&country_id=${countryId}&region_id=${regionId}`)
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
         const data = await res.json()
+        if (cancelled) return
+        if (!Array.isArray(data)) throw new Error('Bad response')
         setCities(data)
-        await db.cities.bulkPut(data.map((c: any) => ({ ...c, region_id: regionId, country_id: countryId, project })))
+        if (data.length > 0) {
+          await db.cities.bulkPut(data.map((c: any) => ({ ...c, region_id: regionId, country_id: countryId, project })))
+        }
       } catch {
-        setCities([])
+        if (!cancelled) setCities([])
       }
     }
     loadCities()
+    return () => { cancelled = true }
   }, [project, countryId, regionId, loadData])
 
   const handleCountryChange = (value: string) => {

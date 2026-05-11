@@ -1,6 +1,4 @@
 import { NextResponse } from 'next/server'
-import { getServerSession } from 'next-auth'
-import { authOptions } from '@/lib/auth'
 import { cookies } from 'next/headers'
 
 const YANDEX_API = 'https://api.webmaster.yandex.net/v4'
@@ -361,9 +359,6 @@ async function runDeepUrlCheck(token: string, userId: string, hostId: string, ur
 }
 
 export async function GET(request: Request) {
-  const session = await getServerSession(authOptions)
-  if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-
   const { searchParams } = new URL(request.url)
   const action = searchParams.get('action') || 'check_url'
 
@@ -596,9 +591,6 @@ export async function GET(request: Request) {
 // ─── POST handler: sitemap check, recrawl ───
 
 export async function POST(request: Request) {
-  const session = await getServerSession(authOptions)
-  if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-
   const token = getToken()
   if (!token) return NextResponse.json({ error: 'Yandex authentication required', needAuth: true }, { status: 401 })
 

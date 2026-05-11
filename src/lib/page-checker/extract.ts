@@ -93,9 +93,9 @@ export function extractPage(html: string): ExtractedPage {
     }
   }
 
-  // Считаем количество вхождений класса HotelCard_root... (устойчиво к любому
-  // суффиксу CSS-модуля и к тому, что карточка может быть на <a>/<article>/<div>).
-  const hotelCardCount = (html.match(/\bHotelCard_root\b/g) || []).length
+  // Считаем количество вхождений класса HotelCard_root (любой суффикс CSS-модуля).
+  // Не используем \b, т.к. после root идёт _ (тоже word-символ) и граница не ставится.
+  const hotelCardCount = (html.match(/HotelCard_root/g) || []).length
   const hasNotFoundBlock = /class\s*=\s*(?:"|')[^"']*HotelsList_notFound/i.test(html)
   const hasPagination = /class\s*=\s*(?:"|')[^"']*Pagination_root/i.test(html)
     || /class\s*=\s*(?:"|')[^"']*InfinityPagination_pagination/i.test(html)
