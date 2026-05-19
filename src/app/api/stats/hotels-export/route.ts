@@ -9,7 +9,7 @@ import { query } from '@/lib/mysql'
  *  - url_ostrovok: https://www.ostrovok.ru/rooms/{hotel_services.text_id}  (service_type='ostrovok')
  *  - url_yandex:   https://travel.yandex.ru/hotels/{hotel_services.text_id} (service_type='yandex')
  *
- * GET /api/stats/hotels-export?city_id=NNN
+ * GET /api/stats/hotels-export?city_id=NNN&score_gt=7&review_count_gt=3
  */
 export async function GET(request: Request) {
   const session = await getServerSession(authOptions)
@@ -18,8 +18,19 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url)
   const cityId = searchParams.get('city_id')
   const premisesTypesRaw = searchParams.get('premises_types') // CSV
+  const scoreGtRaw = searchParams.get('score_gt') || searchParams.get('min_score')
+  const reviewCountGtRaw = searchParams.get('review_count_gt') || searchParams.get('min_review_count')
   if (!cityId) {
     return NextResponse.json({ error: 'city_id is required' }, { status: 400 })
+  }
+
+  const scoreGt = scoreGtRaw ? Number(scoreGtRaw) : null
+  const reviewCountGt = reviewCountGtRaw ? Number(reviewCountGtRaw) : null
+  if (scoreGtRaw && !Number.isFinite(scoreGt)) {
+    return NextResponse.json({ error: 'score_gt must be a number' }, { status: 400 })
+  }
+  if (reviewCountGtRaw && (!Number.isFinite(reviewCountGt) || !Number.isInteger(reviewCountGt))) {
+    return NextResponse.json({ error: 'review_count_gt must be an integer' }, { status: 400 })
   }
 
   const premisesTypes = premisesTypesRaw
@@ -28,9 +39,19 @@ export async function GET(request: Request) {
 
   const params: any[] = [parseInt(cityId, 10)]
   let typeFilter = ''
+  let scoreFilter = ''
+  let reviewCountFilter = ''
   if (premisesTypes.length > 0) {
     typeFilter = ` AND h.premises_type IN (${premisesTypes.map(() => '?').join(',')})`
     params.push(...premisesTypes)
+  }
+  if (scoreGt !== null) {
+    scoreFilter = ' AND h.score > ?'
+    params.push(scoreGt)
+  }
+  if (reviewCountGt !== null) {
+    reviewCountFilter = ' AND h.review_count > ?'
+    params.push(reviewCountGt)
   }
 
   const rows = await query<any>(
@@ -39,6 +60,8 @@ export async function GET(request: Request) {
        h.name        AS hotel_name,
        h.link        AS link,
        h.premises_type AS premises_type,
+       h.score       AS score,
+       h.review_count AS review_count,
        co.link_ru    AS country_slug_ru,
        hs_o.text_id  AS ostrovok_text_id,
        hs_y.text_id  AS yandex_text_id
@@ -53,7 +76,7 @@ export async function GET(request: Request) {
        AND hs_y.entity_id = h.id
        AND hs_y.service_type = 'yandex'
      WHERE h.is_active_ru = 1
-       AND h.loc_city_id = ?${typeFilter}
+       AND h.loc_city_id = ?${typeFilter}${scoreFilter}${reviewCountFilter}
      ORDER BY h.name`,
     params
   )
@@ -74,6 +97,8 @@ export async function GET(request: Request) {
       hotel_id: r.hotel_id,
       hotel_name: r.hotel_name,
       premises_type: r.premises_type || '',
+      score: r.score === null || r.score === undefined ? null : Number(r.score),
+      review_count: r.review_count === null || r.review_count === undefined ? null : Number(r.review_count),
       url_gdeotel,
       url_ostrovok,
       url_yandex,

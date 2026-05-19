@@ -6,6 +6,8 @@ interface HotelRow {
   hotel_id: number
   hotel_name: string
   premises_type: string
+  score: number | null
+  review_count: number | null
   url_gdeotel: string
   url_ostrovok: string
   url_yandex: string
@@ -21,7 +23,11 @@ interface Props {
   cityName?: string
 }
 
-const HEADERS = ['hotel_id', 'hotel_name', 'premises_type', 'url_gdeotel', 'url_ostrovok', 'url_yandex'] as const
+const HEADERS = ['hotel_id', 'hotel_name', 'premises_type', 'score', 'review_count', 'url_gdeotel', 'url_ostrovok', 'url_yandex'] as const
+
+function formatNullableNumber(value: number | null): string {
+  return value === null || value === undefined ? '' : String(value)
+}
 
 function buildTSV(rows: HotelRow[]): string {
   const lines = [HEADERS.join('\t')]
@@ -30,6 +36,8 @@ function buildTSV(rows: HotelRow[]): string {
       r.hotel_id,
       String(r.hotel_name).replace(/[\t\r\n]+/g, ' '),
       r.premises_type,
+      formatNullableNumber(r.score),
+      formatNullableNumber(r.review_count),
       r.url_gdeotel,
       r.url_ostrovok,
       r.url_yandex,
@@ -47,6 +55,8 @@ export function HotelsExport({ cityId, cityName }: Props) {
   const [types, setTypes] = useState<PremisesTypeOption[]>([])
   const [typesLoading, setTypesLoading] = useState(false)
   const [selectedTypes, setSelectedTypes] = useState<Set<string>>(new Set())
+  const [scoreGt, setScoreGt] = useState('')
+  const [reviewCountGt, setReviewCountGt] = useState('')
 
   useEffect(() => {
     if (!cityId) { setTypes([]); setSelectedTypes(new Set()); setRows(null); return }
@@ -71,9 +81,16 @@ export function HotelsExport({ cityId, cityName }: Props) {
       if (next.has(t)) next.delete(t); else next.add(t)
       return next
     })
+    setRows(null)
   }
-  const selectAll = () => setSelectedTypes(new Set(types.map((t) => t.premises_type)))
-  const clearAll = () => setSelectedTypes(new Set())
+  const selectAll = () => {
+    setSelectedTypes(new Set(types.map((t) => t.premises_type)))
+    setRows(null)
+  }
+  const clearAll = () => {
+    setSelectedTypes(new Set())
+    setRows(null)
+  }
 
   const fetchData = async () => {
     if (!cityId) return
@@ -90,6 +107,8 @@ export function HotelsExport({ cityId, cityName }: Props) {
       if (selectedTypes.size > 0 && selectedTypes.size < types.length) {
         params.set('premises_types', Array.from(selectedTypes).join(','))
       }
+      if (scoreGt.trim()) params.set('score_gt', scoreGt.trim())
+      if (reviewCountGt.trim()) params.set('review_count_gt', reviewCountGt.trim())
       const res = await fetch(`/api/stats/hotels-export?${params}`)
       if (!res.ok) {
         const j = await res.json().catch(() => ({}))
@@ -128,6 +147,8 @@ export function HotelsExport({ cityId, cityName }: Props) {
         escape(r.hotel_id),
         escape(r.hotel_name),
         escape(r.premises_type),
+        escape(formatNullableNumber(r.score)),
+        escape(formatNullableNumber(r.review_count)),
         escape(r.url_gdeotel),
         escape(r.url_ostrovok),
         escape(r.url_yandex),
@@ -185,6 +206,44 @@ export function HotelsExport({ cityId, cityName }: Props) {
               </button>
             </>
           )}
+        </div>
+      </div>
+
+      <div className="mb-3 border rounded p-3 bg-gray-50">
+        <label className="block text-xs font-semibold text-gray-700 mb-2">
+          Фильтры качества
+        </label>
+        <div className="flex flex-wrap gap-3">
+          <label className="flex items-center gap-2 text-xs text-gray-600">
+            <span className="whitespace-nowrap">score &gt;</span>
+            <input
+              type="number"
+              min="0"
+              step="0.1"
+              value={scoreGt}
+              onChange={(e) => {
+                setScoreGt(e.target.value)
+                setRows(null)
+              }}
+              placeholder="7"
+              className="w-24 rounded border border-gray-300 px-2 py-1 text-xs focus:border-blue-500 focus:outline-none"
+            />
+          </label>
+          <label className="flex items-center gap-2 text-xs text-gray-600">
+            <span className="whitespace-nowrap">review_count &gt;</span>
+            <input
+              type="number"
+              min="0"
+              step="1"
+              value={reviewCountGt}
+              onChange={(e) => {
+                setReviewCountGt(e.target.value)
+                setRows(null)
+              }}
+              placeholder="3"
+              className="w-24 rounded border border-gray-300 px-2 py-1 text-xs focus:border-blue-500 focus:outline-none"
+            />
+          </label>
         </div>
       </div>
 
@@ -255,6 +314,8 @@ export function HotelsExport({ cityId, cityName }: Props) {
                       <td className="px-3 py-1.5 text-gray-500">{r.hotel_id}</td>
                       <td className="px-3 py-1.5 font-medium">{r.hotel_name}</td>
                       <td className="px-3 py-1.5 text-gray-600 font-mono">{r.premises_type}</td>
+                      <td className="px-3 py-1.5 text-gray-600">{formatNullableNumber(r.score)}</td>
+                      <td className="px-3 py-1.5 text-gray-600">{formatNullableNumber(r.review_count)}</td>
                       <td className="px-3 py-1.5 text-blue-600 truncate max-w-[260px]">
                         {r.url_gdeotel && <a href={r.url_gdeotel} target="_blank" rel="noreferrer" className="hover:underline">{r.url_gdeotel}</a>}
                       </td>
